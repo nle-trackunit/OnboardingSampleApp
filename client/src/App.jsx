@@ -69,7 +69,7 @@ function App() {
           <DataMappingTab onMappingSaved={loadOnboarding} />
         )}
         {activeTab === 'tenant-setup' && (
-          <PlaceholderTab title="Tenant Setup" description="Provision and configure customer tenant" />
+          <TenantSetupTab onProvisioned={loadOnboarding} onNavigate={setActiveTab} />
         )}
         {activeTab === 'import' && (
           <PlaceholderTab title="Import" description="Import customer data into the platform" />
@@ -493,6 +493,187 @@ function DataMappingTab({ onMappingSaved }) {
             {saving ? 'Saving...' : 'Save mapping'}
           </button>
         </>
+      )}
+    </div>
+  );
+}
+
+const PLANS = ['starter', 'professional', 'enterprise'];
+
+function TenantSetupTab({ onProvisioned, onNavigate }) {
+  const [customers, setCustomers] = useState([]);
+  const [tenants, setTenants] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [plan, setPlan] = useState('starter');
+  const [errors, setErrors] = useState({});
+  const [provisioning, setProvisioning] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const load = () => {
+    const getJson = (url) => fetch(url).then(res => {
+      if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+      return res.json();
+    });
+
+    return Promise.all([getJson('/api/customers'), getJson('/api/tenants')])
+      .then(([customerList, tenantList]) => {
+        setCustomers(customerList);
+        setTenants(tenantList);
+      })
+      .catch(err => setMessage({ type: 'error', text: `Failed to load tenants: ${err.message}` }));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  // A customer with no tenant row and one with a 'pending' row are both not provisioned
+  const activeTenantFor = (customerId) =>
+    tenants.find(t => t.customerId === customerId && t.status === 'active');
+  const provisioned = customers.filter(c => activeTenantFor(c.id));
+  const notProvisioned = customers.filter(c => !activeTenantFor(c.id));
+
+  const choose = (customer) => {
+    const pending = tenants.find(t => t.customerId === customer.id);
+    setSelected(customer);
+    setPlan(pending?.plan || 'starter');
+    setErrors({});
+    setMessage(null);
+  };
+
+  const handleProvision = async () => {
+    if (provisioning) return;
+    setProvisioning(true);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/tenants/${selected.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan })
+      });
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 400 && body.errors) {
+        setErrors(body.errors);
+        return;
+      }
+      if (res.status === 422) {
+        setMessage({ type: 'error', text: body.error, resolveOnCustomer: true });
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(body.error || 'Provisioning did not complete. Nothing was changed, so you can try again.');
+      }
+
+      setMessage({
+        type: 'success',
+        text: `${selected.name} is provisioned on the ${body.plan} plan in ${body.region}`
+      });
+      setSelected(null);
+      onProvisioned?.();
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setProvisioning(false);
+      load();
+    }
+  };
+
+  return (
+    <div>
+      <h2>Tenant Setup</h2>
+      <p style={{ color: '#6b7280', marginBottom: '20px' }}>
+        Provision a tenant for each customer
+      </p>
+
+      {message && (
+        <div className={`form-alert ${message.type}`} role={message.type === 'error' ? 'alert' : 'status'}>
+          {message.type === 'success' ? '✓' : '⚠️'} {message.text}
+          {message.resolveOnCustomer && (
+            <>
+              {' '}
+              <button type="button" className="link-button" onClick={() => onNavigate?.('customer-info')}>
+                Go to Customer Info
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      <h3 className="section-title">Not provisioned ({notProvisioned.length})</h3>
+      {notProvisioned.length === 0 ? (
+        <p className="field-hint">Every customer is provisioned</p>
+      ) : (
+        <table className="mapping-table tenant-table">
+          <thead>
+            <tr><th>Customer</th><th>Region</th><th>Industry</th><th></th></tr>
+          </thead>
+          <tbody>
+            {notProvisioned.map(c => (
+              <tr key={c.id}>
+                <td>{c.name}</td>
+                <td>{c.region}</td>
+                <td>{c.industry}</td>
+                <td>
+                  <button type="button" className="secondary-button" onClick={() => choose(c)} disabled={provisioning}>
+                    Provision
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {selected && (
+        <div className="provision-panel" aria-label={`Provision ${selected.name}`} role="group">
+          <h3>Provision {selected.name}</h3>
+          <div className="form-field">
+            <label htmlFor="tenant-plan">Plan</label>
+            <select
+              id="tenant-plan"
+              value={plan}
+              onChange={e => { setPlan(e.target.value); setErrors({}); }}
+              aria-invalid={Boolean(errors.plan)}
+            >
+              {PLANS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            {errors.plan && <span className="field-error">{errors.plan}</span>}
+          </div>
+          <p className="field-hint">Region: <strong>{selected.region || '—'}</strong> (from the customer record)</p>
+          <div className="button-row">
+            <button type="button" className="primary-button" onClick={handleProvision} disabled={provisioning}>
+              {provisioning ? 'Provisioning...' : 'Confirm provision'}
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setSelected(null)} disabled={provisioning}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <h3 className="section-title">Provisioned ({provisioned.length})</h3>
+      {provisioned.length === 0 ? (
+        <p className="field-hint">No customers are provisioned yet</p>
+      ) : (
+        <table className="mapping-table tenant-table">
+          <thead>
+            <tr><th>Customer</th><th>Plan</th><th>Region</th><th>Provisioned</th></tr>
+          </thead>
+          <tbody>
+            {provisioned.map(c => {
+              const tenant = activeTenantFor(c.id);
+              return (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td>{tenant.plan}</td>
+                  <td>{tenant.region}</td>
+                  <td>{new Date(tenant.provisionedAt).toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );

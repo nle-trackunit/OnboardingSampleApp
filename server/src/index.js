@@ -8,6 +8,7 @@ const {
   validateCustomerInfo,
   TARGET_FIELDS,
   validateDataMapping,
+  validateProvisionRequest,
   calculateProgress
 } = require('./models');
 
@@ -127,6 +128,43 @@ app.get('/api/onboarding', (req, res) => {
   });
   
   res.json(dashboard);
+});
+
+// Get all tenants (Tenant Setup view)
+app.get('/api/tenants', (req, res) => {
+  res.json(store.getTenants());
+});
+
+// Provision a customer's tenant and complete the Tenant Setup step
+app.post('/api/tenants/:customerId', (req, res) => {
+  const { valid, errors, plan } = validateProvisionRequest(req.body);
+  if (!valid) {
+    return res.status(400).json({ error: 'Validation failed', errors });
+  }
+
+  let result;
+  try {
+    result = store.provisionTenant(req.params.customerId, plan);
+  } catch (err) {
+    console.error('Provisioning failed:', err);
+    return res.status(500).json({
+      error: 'Provisioning did not complete. Nothing was changed, so you can try again.'
+    });
+  }
+
+  switch (result.outcome) {
+    case 'customer_not_found':
+      return res.status(404).json({ error: 'That customer no longer exists' });
+    case 'unmapped':
+      return res.status(422).json({
+        error: `Resolve ${result.field} on the customer before provisioning`,
+        field: result.field
+      });
+    case 'already_provisioned':
+      return res.status(200).json(result.tenant);
+    default:
+      return res.status(201).json(result.tenant);
+  }
 });
 
 // Get tenant by customer ID

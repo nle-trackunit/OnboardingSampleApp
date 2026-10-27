@@ -2,6 +2,8 @@
  * SQLite-backed Data Store
  */
 
+const { createTenant, resolveCanonicalFields, calculateProgress } = require('../models');
+
 function toCustomer(row) {
   return row && {
     id: row.id,
@@ -19,7 +21,9 @@ function toTenant(row) {
     customerId: row.customer_id,
     status: row.status,
     plan: row.plan,
-    createdAt: row.created_at
+    region: row.region,
+    createdAt: row.created_at,
+    provisionedAt: row.provisioned_at
   };
 }
 
@@ -50,10 +54,14 @@ function createStore(db) {
       VALUES (@id, @name, @industry, @region, @contactEmail, @createdAt)
     `),
     allTenants: db.prepare('SELECT * FROM tenants ORDER BY created_at, id'),
-    tenantByCustomerId: db.prepare('SELECT * FROM tenants WHERE customer_id = ? ORDER BY created_at LIMIT 1'),
+    tenantByCustomerId: db.prepare('SELECT * FROM tenants WHERE customer_id = ?'),
     insertTenant: db.prepare(`
-      INSERT INTO tenants (id, customer_id, status, plan, created_at)
-      VALUES (@id, @customerId, @status, @plan, @createdAt)
+      INSERT INTO tenants (id, customer_id, status, plan, region, created_at, provisioned_at)
+      VALUES (@id, @customerId, @status, @plan, @region, @createdAt, @provisionedAt)
+    `),
+    activateTenant: db.prepare(`
+      UPDATE tenants SET status = 'active', plan = @plan, region = @region, provisioned_at = @provisionedAt
+      WHERE customer_id = @customerId AND status = 'pending'
     `),
     stateByCustomerId: db.prepare('SELECT * FROM onboarding_states WHERE customer_id = ?'),
     allStates: db.prepare(`
@@ -148,6 +156,51 @@ function createStore(db) {
     return getOnboardingState(customerId);
   });
 
+  /**
+   * Provisions a customer's tenant and completes the Tenant Setup step, all or nothing.
+   * A missing tenant row and a 'pending' one are both "not provisioned".
+   * @returns {{ outcome: 'provisioned'|'already_provisioned', tenant: object }
+   *   | { outcome: 'customer_not_found' }
+   *   | { outcome: 'unmapped', field: 'region'|'industry' }}
+   */
+  const provisionTransaction = db.transaction((customerId, plan) => {
+    const customer = getCustomerById(customerId);
+    if (!customer) return { outcome: 'customer_not_found' };
+
+    const existing = getTenantByCustomerId(customerId);
+    if (existing?.status === 'active') return { outcome: 'already_provisioned', tenant: existing };
+
+    const { region, unmappedField } = resolveCanonicalFields(customer);
+    if (unmappedField) return { outcome: 'unmapped', field: unmappedField };
+
+    const provisionedAt = new Date().toISOString();
+    if (existing) {
+      stmts.activateTenant.run({ customerId, plan, region, provisionedAt });
+    } else {
+      addTenant(createTenant({ customerId, status: 'active', plan, region, provisionedAt }));
+    }
+
+    const state = getOnboardingState(customerId);
+    if (!state) throw new Error(`No onboarding state for customer ${customerId}`);
+    const steps = state.steps.map(step =>
+      step.id === 'step_3' ? { ...step, status: 'completed' } : step
+    );
+    updateOnboardingState(customerId, { steps, progressPercent: calculateProgress(steps) });
+
+    return { outcome: 'provisioned', tenant: getTenantByCustomerId(customerId) };
+  });
+
+  function provisionTenant(customerId, plan) {
+    try {
+      return provisionTransaction.immediate(customerId, plan);
+    } catch (err) {
+      // Another connection provisioned the same customer first; theirs is the one tenant
+      const winner = err.code === 'SQLITE_CONSTRAINT_UNIQUE' && getTenantByCustomerId(customerId);
+      if (winner?.status === 'active') return { outcome: 'already_provisioned', tenant: winner };
+      throw err;
+    }
+  }
+
   function getDataMappings(customerId) {
     return stmts.mappingsByCustomerId.all(customerId).map(toDataMapping);
   }
@@ -175,6 +228,7 @@ function createStore(db) {
     getTenants,
     getTenantByCustomerId,
     addTenant,
+    provisionTenant,
     getOnboardingState,
     getAllOnboardingStates,
     addOnboardingState,

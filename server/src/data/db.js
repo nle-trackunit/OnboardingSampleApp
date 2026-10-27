@@ -5,9 +5,31 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
-const { createCustomer, createTenant, createDefaultOnboardingSteps } = require('../models');
+const {
+  createCustomer,
+  createTenant,
+  createDefaultOnboardingSteps,
+  TENANT_STATUSES,
+  TENANT_PLANS
+} = require('../models');
 
 const DEFAULT_DB_PATH = path.join(__dirname, '..', '..', 'data', 'onboarding.db');
+
+const sqlList = (values) => values.map(v => `'${v}'`).join(', ');
+
+function tenantsTableSql(name) {
+  return `
+  CREATE TABLE IF NOT EXISTS ${name} (
+    id             TEXT PRIMARY KEY,
+    customer_id    TEXT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE CASCADE,
+    status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (${sqlList(TENANT_STATUSES)})),
+    plan           TEXT NOT NULL DEFAULT 'starter' CHECK (plan IN (${sqlList(TENANT_PLANS)})),
+    region         TEXT,
+    created_at     TEXT NOT NULL,
+    provisioned_at TEXT,
+    CHECK (status <> 'active' OR (region IS NOT NULL AND region <> '' AND provisioned_at IS NOT NULL))
+  );`;
+}
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS customers (
@@ -19,15 +41,7 @@ const SCHEMA = `
     created_at    TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS tenants (
-    id          TEXT PRIMARY KEY,
-    customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    plan        TEXT NOT NULL DEFAULT 'starter',
-    created_at  TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_tenants_customer_id ON tenants(customer_id);
+  ${tenantsTableSql('tenants')}
 
   CREATE TABLE IF NOT EXISTS onboarding_states (
     customer_id      TEXT PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
@@ -79,8 +93,8 @@ function seed(db) {
     VALUES (@id, @name, @industry, @region, @contactEmail, @createdAt)
   `);
   const insertTenant = db.prepare(`
-    INSERT INTO tenants (id, customer_id, status, plan, created_at)
-    VALUES (@id, @customerId, @status, @plan, @createdAt)
+    INSERT INTO tenants (id, customer_id, status, plan, region, created_at, provisioned_at)
+    VALUES (@id, @customerId, @status, @plan, @region, @createdAt, @provisionedAt)
   `);
   const insertState = db.prepare(
     'INSERT INTO onboarding_states (customer_id, progress_percent) VALUES (?, ?)'
@@ -101,6 +115,32 @@ function seed(db) {
 }
 
 /**
+ * Rebuilds a tenants table created before provisioning existed, adding the UNIQUE and CHECK
+ * constraints. Old rows can never have been provisioned, so they are kept as 'pending', and only
+ * the earliest tenant per customer survives.
+ */
+function migrateTenants(db) {
+  const columns = db.prepare('PRAGMA table_info(tenants)').all().map(c => c.name);
+  if (columns.includes('provisioned_at')) return;
+
+  db.transaction(() => {
+    db.exec(tenantsTableSql('tenants_new'));
+    db.exec(`
+      INSERT INTO tenants_new (id, customer_id, status, plan, region, created_at, provisioned_at)
+      SELECT id, customer_id, 'pending',
+             CASE WHEN plan IN (${sqlList(TENANT_PLANS)}) THEN plan ELSE 'starter' END,
+             NULL, created_at, NULL
+      FROM tenants t
+      WHERE id = (
+        SELECT id FROM tenants WHERE customer_id = t.customer_id ORDER BY created_at, id LIMIT 1
+      );
+      DROP TABLE tenants;
+      ALTER TABLE tenants_new RENAME TO tenants;
+    `);
+  })();
+}
+
+/**
  * Opens (creating if needed) the SQLite database, applies the schema and seeds example data
  * @param {string} [dbPath] - File path, or ':memory:' for an ephemeral database
  * @returns {import('better-sqlite3').Database}
@@ -114,6 +154,7 @@ function openDatabase(dbPath = process.env.DB_PATH || DEFAULT_DB_PATH) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  migrateTenants(db);
   seed(db);
   return db;
 }

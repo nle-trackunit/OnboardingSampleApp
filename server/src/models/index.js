@@ -16,9 +16,11 @@
  * @typedef {Object} Tenant
  * @property {string} id - Unique tenant identifier
  * @property {string} customerId - Associated customer ID
- * @property {string} status - 'pending' | 'provisioning' | 'active' | 'failed'
+ * @property {string} status - 'pending' | 'active'
  * @property {string} plan - 'starter' | 'professional' | 'enterprise'
+ * @property {string|null} region - Canonical region the tenant was provisioned in
  * @property {string} createdAt - ISO timestamp
+ * @property {string|null} provisionedAt - ISO timestamp, null until provisioned
  */
 
 /**
@@ -63,8 +65,59 @@ function createTenant(data) {
     customerId: data.customerId || '',
     status: data.status || 'pending',
     plan: data.plan || 'starter',
-    createdAt: data.createdAt || new Date().toISOString()
+    region: data.region || null,
+    createdAt: data.createdAt || new Date().toISOString(),
+    provisionedAt: data.provisionedAt || null
   };
+}
+
+const TENANT_STATUSES = ['pending', 'active'];
+const TENANT_PLANS = ['starter', 'professional', 'enterprise'];
+
+const REGIONS = ['North America', 'EMEA', 'APAC', 'LATAM'];
+const INDUSTRIES = [
+  'Accounting',
+  'Financial Services',
+  'Legal',
+  'Manufacturing',
+  'Technology',
+  'Healthcare',
+  'Retail',
+  'Public Sector',
+  'Other'
+];
+
+function toCanonical(value, vocabulary) {
+  const key = String(value ?? '').trim().toLowerCase();
+  return vocabulary.find(v => v.toLowerCase() === key) || null;
+}
+
+/**
+ * Resolves a customer's region and industry against the canonical vocabularies
+ * @param {Customer} customer
+ * @returns {{ region: string|null, industry: string|null, unmappedField: 'region'|'industry'|null }}
+ */
+function resolveCanonicalFields(customer) {
+  const region = toCanonical(customer.region, REGIONS);
+  const industry = toCanonical(customer.industry, INDUSTRIES);
+  const unmappedField = !region ? 'region' : !industry ? 'industry' : null;
+  return { region, industry, unmappedField };
+}
+
+/**
+ * Validates a provisioning request body
+ * @param {{ plan?: string }} data
+ * @returns {{ valid: boolean, errors: Object<string, string>, plan: string }}
+ */
+function validateProvisionRequest(data = {}) {
+  const plan = String(data.plan ?? '').trim().toLowerCase();
+  const errors = {};
+  if (!plan) {
+    errors.plan = 'Plan is required';
+  } else if (!TENANT_PLANS.includes(plan)) {
+    errors.plan = `Plan must be one of: ${TENANT_PLANS.join(', ')}`;
+  }
+  return { valid: Object.keys(errors).length === 0, errors, plan };
 }
 
 /**
@@ -198,5 +251,11 @@ module.exports = {
   validateCustomerInfo,
   TARGET_FIELDS,
   validateDataMapping,
-  calculateProgress
+  calculateProgress,
+  resolveCanonicalFields,
+  validateProvisionRequest,
+  TENANT_STATUSES,
+  TENANT_PLANS,
+  REGIONS,
+  INDUSTRIES
 };
