@@ -5,6 +5,8 @@ const {
   createTenant, 
   createDefaultOnboardingSteps, 
   validateCustomerInfo,
+  TARGET_FIELDS,
+  validateDataMapping,
   calculateProgress 
 } = require('./index');
 
@@ -68,6 +70,54 @@ describe('Domain Models', () => {
 
       assert.strictEqual(result.valid, false);
       assert.strictEqual(result.errors.contactEmail, 'Contact email is invalid');
+    });
+  });
+
+  describe('validateDataMapping', () => {
+    const sourceHeaders = ['clientCode', 'companyName', 'clientStatus'];
+
+    it('should accept a mapping of every required field and trim values', () => {
+      const result = validateDataMapping('clients', {
+        sourceHeaders,
+        columns: { clientId: ' clientCode ', name: 'companyName', status: 'clientStatus', taxId: '' }
+      });
+
+      assert.strictEqual(result.valid, true);
+      assert.deepStrictEqual(result.mapping.columns, {
+        clientId: 'clientCode',
+        name: 'companyName',
+        status: 'clientStatus'
+      });
+    });
+
+    it('should require the required target fields to be mapped', () => {
+      const result = validateDataMapping('clients', { sourceHeaders, columns: {} });
+
+      assert.strictEqual(result.valid, false);
+      assert.deepStrictEqual(Object.keys(result.errors).sort(), ['clientId', 'name']);
+    });
+
+    it('should reject columns that are not in the file or mapped twice', () => {
+      const result = validateDataMapping('clients', {
+        sourceHeaders,
+        columns: { clientId: 'clientCode', name: 'clientCode', status: 'missing' }
+      });
+
+      assert.strictEqual(result.valid, false);
+      assert.match(result.errors.name, /already mapped to Client ID/);
+      assert.match(result.errors.status, /not in the file/);
+    });
+
+    it('should reject an unknown entity or missing headers', () => {
+      assert.ok(validateDataMapping('widgets', {}).errors.entity);
+      assert.ok(validateDataMapping('clients', { columns: {} }).errors.sourceHeaders);
+    });
+
+    it('should list an alias for every sample-data client column', () => {
+      const aliases = TARGET_FIELDS.clients.flatMap(f => f.aliases);
+      for (const header of ['Client ID', 'clientCode', 'customer_id', 'Primary Contact', 'key_contact_name']) {
+        assert.ok(aliases.includes(header), header);
+      }
     });
   });
 
