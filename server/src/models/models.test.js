@@ -4,6 +4,7 @@ const {
   createCustomer, 
   createTenant, 
   createDefaultOnboardingSteps, 
+  validateCustomerInfo,
   calculateProgress 
 } = require('./index');
 
@@ -29,6 +30,44 @@ describe('Domain Models', () => {
       assert.ok(customer.id.startsWith('cust_'));
       assert.strictEqual(customer.name, '');
       assert.ok(customer.createdAt);
+    });
+  });
+
+  describe('validateCustomerInfo', () => {
+    it('should accept valid input and normalize it', () => {
+      const result = validateCustomerInfo({
+        name: '  Test Corp ',
+        industry: 'Tech',
+        region: 'EMEA',
+        contactEmail: ' Ops@Test.Example.com '
+      });
+
+      assert.strictEqual(result.valid, true);
+      assert.deepStrictEqual(result.errors, {});
+      assert.strictEqual(result.customer.name, 'Test Corp');
+      assert.strictEqual(result.customer.contactEmail, 'ops@test.example.com');
+    });
+
+    it('should report every missing field', () => {
+      const result = validateCustomerInfo({});
+
+      assert.strictEqual(result.valid, false);
+      assert.deepStrictEqual(
+        Object.keys(result.errors).sort(),
+        ['contactEmail', 'industry', 'name', 'region']
+      );
+    });
+
+    it('should reject an invalid email', () => {
+      const result = validateCustomerInfo({
+        name: 'Test Corp',
+        industry: 'Tech',
+        region: 'EMEA',
+        contactEmail: 'not-an-email'
+      });
+
+      assert.strictEqual(result.valid, false);
+      assert.strictEqual(result.errors.contactEmail, 'Contact email is invalid');
     });
   });
 
