@@ -321,10 +321,12 @@ function DataMappingTab({ onMappingSaved }) {
   const [message, setMessage] = useState(null);
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/customers').then(res => res.json()),
-      fetch('/api/mapping/fields').then(res => res.json())
-    ])
+    const getJson = (url) => fetch(url).then(res => {
+      if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+      return res.json();
+    });
+
+    Promise.all([getJson('/api/customers'), getJson('/api/mapping/fields')])
       .then(([customerList, targetFields]) => {
         setCustomers(customerList);
         setFields(targetFields[entity] || []);
