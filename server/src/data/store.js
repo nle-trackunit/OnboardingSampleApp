@@ -27,6 +27,16 @@ function toStep(row) {
   return { id: row.id, name: row.name, status: row.status, order: row.step_order };
 }
 
+function toDataMapping(row) {
+  return row && {
+    customerId: row.customer_id,
+    entity: row.entity,
+    sourceHeaders: JSON.parse(row.source_headers),
+    columns: JSON.parse(row.columns),
+    updatedAt: row.updated_at
+  };
+}
+
 /**
  * Creates a store bound to an open database
  * @param {import('better-sqlite3').Database} db
@@ -58,6 +68,16 @@ function createStore(db) {
     insertStep: db.prepare(`
       INSERT INTO onboarding_steps (customer_id, id, name, status, step_order)
       VALUES (?, ?, ?, ?, ?)
+    `),
+    mappingsByCustomerId: db.prepare('SELECT * FROM data_mappings WHERE customer_id = ? ORDER BY entity'),
+    mappingByCustomerAndEntity: db.prepare('SELECT * FROM data_mappings WHERE customer_id = ? AND entity = ?'),
+    upsertMapping: db.prepare(`
+      INSERT INTO data_mappings (customer_id, entity, source_headers, columns, updated_at)
+      VALUES (@customerId, @entity, @sourceHeaders, @columns, @updatedAt)
+      ON CONFLICT (customer_id, entity) DO UPDATE SET
+        source_headers = excluded.source_headers,
+        columns = excluded.columns,
+        updated_at = excluded.updated_at
     `)
   };
 
@@ -128,6 +148,25 @@ function createStore(db) {
     return getOnboardingState(customerId);
   });
 
+  function getDataMappings(customerId) {
+    return stmts.mappingsByCustomerId.all(customerId).map(toDataMapping);
+  }
+
+  function getDataMapping(customerId, entity) {
+    return toDataMapping(stmts.mappingByCustomerAndEntity.get(customerId, entity));
+  }
+
+  function saveDataMapping(mapping) {
+    stmts.upsertMapping.run({
+      customerId: mapping.customerId,
+      entity: mapping.entity,
+      sourceHeaders: JSON.stringify(mapping.sourceHeaders),
+      columns: JSON.stringify(mapping.columns),
+      updatedAt: mapping.updatedAt || new Date().toISOString()
+    });
+    return getDataMapping(mapping.customerId, mapping.entity);
+  }
+
   return {
     transaction: (fn) => db.transaction(fn)(),
     getCustomers,
@@ -139,7 +178,10 @@ function createStore(db) {
     getOnboardingState,
     getAllOnboardingStates,
     addOnboardingState,
-    updateOnboardingState
+    updateOnboardingState,
+    getDataMappings,
+    getDataMapping,
+    saveDataMapping
   };
 }
 

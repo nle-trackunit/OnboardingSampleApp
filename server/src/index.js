@@ -6,6 +6,8 @@ const {
   createCustomer,
   createDefaultOnboardingSteps,
   validateCustomerInfo,
+  TARGET_FIELDS,
+  validateDataMapping,
   calculateProgress
 } = require('./models');
 
@@ -66,6 +68,46 @@ app.get('/api/customers/:id/onboarding', (req, res) => {
     return res.status(404).json({ error: 'Onboarding state not found' });
   }
   res.json(state);
+});
+
+// Get the platform fields that customer data can be mapped to
+app.get('/api/mapping/fields', (req, res) => {
+  res.json(TARGET_FIELDS);
+});
+
+// Get all saved data mappings for a customer
+app.get('/api/customers/:id/mappings', (req, res) => {
+  if (!store.getCustomerById(req.params.id)) {
+    return res.status(404).json({ error: 'Customer not found' });
+  }
+  res.json(store.getDataMappings(req.params.id));
+});
+
+// Save a customer's column mapping for one entity and complete the Data Mapping step
+app.put('/api/customers/:id/mappings/:entity', (req, res) => {
+  const { id, entity } = req.params;
+  if (!store.getCustomerById(id)) {
+    return res.status(404).json({ error: 'Customer not found' });
+  }
+
+  const { valid, errors, mapping } = validateDataMapping(entity, req.body);
+  if (!valid) {
+    return res.status(400).json({ error: 'Validation failed', errors });
+  }
+
+  const saved = store.transaction(() => {
+    const result = store.saveDataMapping({ customerId: id, entity, ...mapping });
+    const state = store.getOnboardingState(id);
+    if (state) {
+      const steps = state.steps.map(step =>
+        step.id === 'step_2' ? { ...step, status: 'completed' } : step
+      );
+      store.updateOnboardingState(id, { steps, progressPercent: calculateProgress(steps) });
+    }
+    return result;
+  });
+
+  res.json(saved);
 });
 
 // Get all onboarding states (dashboard view)

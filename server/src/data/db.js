@@ -42,6 +42,15 @@ const SCHEMA = `
     step_order  INTEGER NOT NULL,
     PRIMARY KEY (customer_id, id)
   );
+
+  CREATE TABLE IF NOT EXISTS data_mappings (
+    customer_id    TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    entity         TEXT NOT NULL,
+    source_headers TEXT NOT NULL,
+    columns        TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (customer_id, entity)
+  );
 `;
 
 function seed(db) {

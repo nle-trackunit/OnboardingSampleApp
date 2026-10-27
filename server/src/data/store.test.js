@@ -55,6 +55,23 @@ describe('SQLite Store', () => {
     assert.strictEqual(store.updateOnboardingState('missing', { progressPercent: 50 }), null);
   });
 
+  it('should save, read back and overwrite a data mapping', () => {
+    const mapping = {
+      customerId: 'cust_001',
+      entity: 'clients',
+      sourceHeaders: ['Client ID', 'Client Name'],
+      columns: { clientId: 'Client ID', name: 'Client Name' }
+    };
+    const saved = store.saveDataMapping(mapping);
+    assert.deepStrictEqual(saved.columns, mapping.columns);
+    assert.ok(saved.updatedAt);
+
+    store.saveDataMapping({ ...mapping, columns: { clientId: 'Client Name', name: 'Client ID' } });
+    assert.strictEqual(store.getDataMappings('cust_001').length, 1);
+    assert.strictEqual(store.getDataMapping('cust_001', 'clients').columns.clientId, 'Client Name');
+    assert.strictEqual(store.getDataMapping('cust_001', 'contacts'), undefined);
+  });
+
   it('should roll back every write in a failed transaction', () => {
     assert.throws(() =>
       store.transaction(() => {
