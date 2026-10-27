@@ -30,5 +30,8 @@ npm-debug.log*
 /blob-report/
 /playwright/.cache/
 
+# Local SQLite database
+/server/data/
+
 # Coverage
 coverage/

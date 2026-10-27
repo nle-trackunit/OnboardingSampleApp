@@ -80,6 +80,34 @@ function createDefaultOnboardingSteps() {
   ];
 }
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Validates and normalizes customer info input
+ * @param {Partial<Customer>} data
+ * @returns {{ valid: boolean, errors: Object<string, string>, customer: Partial<Customer> }}
+ */
+function validateCustomerInfo(data = {}) {
+  const customer = {
+    name: String(data.name ?? '').trim(),
+    industry: String(data.industry ?? '').trim(),
+    region: String(data.region ?? '').trim(),
+    contactEmail: String(data.contactEmail ?? '').trim().toLowerCase()
+  };
+
+  const errors = {};
+  if (!customer.name) errors.name = 'Name is required';
+  if (!customer.industry) errors.industry = 'Industry is required';
+  if (!customer.region) errors.region = 'Region is required';
+  if (!customer.contactEmail) {
+    errors.contactEmail = 'Contact email is required';
+  } else if (!EMAIL_PATTERN.test(customer.contactEmail)) {
+    errors.contactEmail = 'Contact email is invalid';
+  }
+
+  return { valid: Object.keys(errors).length === 0, errors, customer };
+}
+
 /**
  * Calculates progress percentage from steps
  * @param {OnboardingStep[]} steps 
@@ -95,5 +123,6 @@ module.exports = {
   createCustomer,
   createTenant,
   createDefaultOnboardingSteps,
+  validateCustomerInfo,
   calculateProgress
 };

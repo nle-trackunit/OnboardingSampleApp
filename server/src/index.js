@@ -1,9 +1,17 @@
 const express = require('express');
 const cors = require('cors');
-const store = require('./data/store');
+const { openDatabase } = require('./data/db');
+const { createStore } = require('./data/store');
+const {
+  createCustomer,
+  createDefaultOnboardingSteps,
+  validateCustomerInfo,
+  calculateProgress
+} = require('./models');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const store = createStore(openDatabase());
 
 // Middleware
 app.use(cors());
@@ -17,6 +25,29 @@ app.get('/api/health', (req, res) => {
 // Get all customers
 app.get('/api/customers', (req, res) => {
   res.json(store.getCustomers());
+});
+
+// Create customer from the Customer Info form and add it to the onboarding queue
+app.post('/api/customers', (req, res) => {
+  const { valid, errors, customer: info } = validateCustomerInfo(req.body);
+  if (!valid) {
+    return res.status(400).json({ error: 'Validation failed', errors });
+  }
+
+  const steps = createDefaultOnboardingSteps().map(step =>
+    step.id === 'step_1' ? { ...step, status: 'completed' } : step
+  );
+  const customer = store.transaction(() => {
+    const created = store.addCustomer(createCustomer(info));
+    store.addOnboardingState({
+      customerId: created.id,
+      steps,
+      progressPercent: calculateProgress(steps)
+    });
+    return created;
+  });
+
+  res.status(201).json(customer);
 });
 
 // Get customer by ID

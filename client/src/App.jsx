@@ -14,8 +14,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    fetch('/api/onboarding')
+  const loadOnboarding = () => {
+    return fetch('/api/onboarding')
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -33,6 +33,10 @@ function App() {
         setOnboardingData([]);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    loadOnboarding();
   }, []);
 
   return (
@@ -59,7 +63,7 @@ function App() {
           <DashboardTab data={onboardingData} loading={loading} error={error} />
         )}
         {activeTab === 'customer-info' && (
-          <PlaceholderTab title="Customer Info" description="Collect and validate customer information" />
+          <CustomerInfoTab onCustomerCreated={loadOnboarding} />
         )}
         {activeTab === 'data-mapping' && (
           <PlaceholderTab title="Data Mapping" description="Map customer data to platform configuration" />
@@ -146,6 +150,104 @@ function Checklist({ steps }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+const EMPTY_CUSTOMER = { name: '', industry: '', region: '', contactEmail: '' };
+
+const CUSTOMER_FIELDS = [
+  { name: 'name', label: 'Customer name', type: 'text', placeholder: 'Acme Corporation' },
+  { name: 'industry', label: 'Industry', type: 'text', placeholder: 'Manufacturing' },
+  { name: 'region', label: 'Region', type: 'text', placeholder: 'North America' },
+  { name: 'contactEmail', label: 'Contact email', type: 'email', placeholder: 'onboarding@acme.example.com' }
+];
+
+function CustomerInfoTab({ onCustomerCreated }) {
+  const [form, setForm] = useState(EMPTY_CUSTOMER);
+  const [errors, setErrors] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const [created, setCreated] = useState(null);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setForm(prev => ({ ...prev, [name]: value }));
+    setErrors(prev => ({ ...prev, [name]: undefined }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setSubmitError(null);
+    setCreated(null);
+
+    try {
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form)
+      });
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 400 && body.errors) {
+        setErrors(body.errors);
+        return;
+      }
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+      setCreated(body);
+      setForm(EMPTY_CUSTOMER);
+      setErrors({});
+      onCustomerCreated?.();
+    } catch (err) {
+      setSubmitError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2>Customer Info</h2>
+      <p style={{ color: '#6b7280', marginBottom: '20px' }}>
+        Collect and validate customer information
+      </p>
+
+      {created && (
+        <div className="form-alert success" role="status">
+          ✓ {created.name} was added to the onboarding queue
+        </div>
+      )}
+      {submitError && (
+        <div className="form-alert error" role="alert">
+          ⚠️ Failed to save customer: {submitError}
+        </div>
+      )}
+
+      <form className="customer-form" onSubmit={handleSubmit} noValidate>
+        {CUSTOMER_FIELDS.map(field => (
+          <div key={field.name} className="form-field">
+            <label htmlFor={field.name}>{field.label}</label>
+            <input
+              id={field.name}
+              name={field.name}
+              type={field.type}
+              placeholder={field.placeholder}
+              value={form[field.name]}
+              onChange={handleChange}
+              aria-invalid={Boolean(errors[field.name])}
+            />
+            {errors[field.name] && (
+              <span className="field-error">{errors[field.name]}</span>
+            )}
+          </div>
+        ))}
+
+        <button type="submit" className="primary-button" disabled={submitting}>
+          {submitting ? 'Saving...' : 'Save customer'}
+        </button>
+      </form>
+    </div>
   );
 }
 

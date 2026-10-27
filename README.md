@@ -117,6 +117,7 @@ Then open **http://localhost:5173** in your browser.
 | `just start` | `npm start` | Run full app (server + client) |
 | `just server` | `npm run server` | Run backend only (port 3001) |
 | `just client` | `npm run client` | Run frontend only (port 5173) |
+| `just reset-db` | — | Delete the local SQLite database (re-seeded on next start) |
 | `just test` | `npm test` | Run unit and e2e tests |
 | `just test-unit` | `npm run test:unit` | Run unit tests |
 | `just test-e2e` | `npm run test:e2e` | Run Playwright e2e tests |
@@ -200,6 +201,12 @@ OnboardingStep {
 - 1 example customer: **Acme Corporation**
 - 1 example onboarding state at 0% progress
 
+### Database
+- The server stores data in `server/data/onboarding.db`, created on first start (git-ignored)
+- The schema is applied and seed data inserted automatically when the database is empty
+- Set `DB_PATH` to use a different file, or `DB_PATH=:memory:` for a throwaway in-memory database
+- Reset to the seed data with `just reset-db` (or delete `server/data/` while the server is stopped)
+
 ### Progress Indicator
 - ✅ Static checklist showing all steps as pending
 - ✅ Progress bar at 0%
@@ -216,7 +223,7 @@ Intentionally boring and fast:
 
 - **Frontend:** React 18 + Vite
 - **Backend:** Express.js
-- **Storage:** In-memory only (no database)
+- **Storage:** SQLite via [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) — a single local file, no database server to install
 - **Auth:** None
 - **Styling:** Minimal CSS
 
@@ -241,6 +248,7 @@ Intentionally boring and fast:
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
 | GET | `/api/customers` | List all customers |
+| POST | `/api/customers` | Create customer and start its onboarding |
 | GET | `/api/customers/:id` | Get customer by ID |
 | GET | `/api/customers/:id/onboarding` | Get onboarding state |
 | GET | `/api/onboarding` | Dashboard view (all states + customer info) |
