@@ -3,6 +3,51 @@
  */
 
 const { createTenant, resolveCanonicalFields, calculateProgress } = require('../models');
+const { ENTITIES, ENTITY_NAMES, CURRENCY_ENTITIES } = require('../import/schema');
+
+function toImportRun(row) {
+  return row && {
+    id: row.id,
+    tenantId: row.tenant_id,
+    entity: row.entity,
+    filename: row.filename,
+    mappingId: row.mapping_id,
+    contentHash: row.content_hash,
+    rowsRead: row.rows_read,
+    rowsValid: row.rows_valid,
+    rowsRejected: row.rows_rejected,
+    rowsFlagged: row.rows_flagged,
+    committedAt: row.committed_at
+  };
+}
+
+function upsertSql(entity) {
+  const { table, idKey, fields } = ENTITIES[entity];
+  const columns = [
+    ...fields.map(f => f.column),
+    ...(CURRENCY_ENTITIES.has(entity) ? ['currency'] : []),
+    'needs_review', 'review_notes', 'import_run_id'
+  ];
+  const idColumn = fields.find(f => f.key === idKey).column;
+  return `
+    INSERT INTO ${table} (tenant_id, ${columns.join(', ')})
+    VALUES (@tenantId, ${columns.map(c => `@${c}`).join(', ')})
+    ON CONFLICT (tenant_id, ${idColumn}) DO UPDATE SET
+      ${columns.filter(c => c !== idColumn).map(c => `${c} = excluded.${c}`).join(',\n      ')}
+  `;
+}
+
+function toRowParams(entity, tenantId, importRunId, { record, review }) {
+  const params = { tenantId, import_run_id: importRunId };
+  for (const field of ENTITIES[entity].fields) {
+    const value = record[field.key];
+    params[field.column] = typeof value === 'boolean' ? Number(value) : value;
+  }
+  if (CURRENCY_ENTITIES.has(entity)) params.currency = record.currency;
+  params.needs_review = review.length > 0 ? 1 : 0;
+  params.review_notes = review.length > 0 ? JSON.stringify(review) : null;
+  return params;
+}
 
 function toCustomer(row) {
   return row && {
@@ -86,7 +131,22 @@ function createStore(db) {
         source_headers = excluded.source_headers,
         columns = excluded.columns,
         updated_at = excluded.updated_at
-    `)
+    `),
+    importRunsByTenant: db.prepare('SELECT * FROM import_runs WHERE tenant_id = ? ORDER BY id'),
+    latestImportRun: db.prepare('SELECT * FROM import_runs WHERE tenant_id = ? AND entity = ? ORDER BY id DESC LIMIT 1'),
+    insertImportRun: db.prepare(`
+      INSERT INTO import_runs (tenant_id, entity, filename, mapping_id, content_hash,
+        rows_read, rows_valid, rows_rejected, rows_flagged, committed_at)
+      VALUES (@tenantId, @entity, @filename, @mappingId, @contentHash,
+        @rowsRead, @rowsValid, @rowsRejected, @rowsFlagged, @committedAt)
+    `),
+    importRunById: db.prepare('SELECT * FROM import_runs WHERE id = ?'),
+    hasClient: db.prepare('SELECT 1 FROM tenant_clients WHERE tenant_id = ? AND source_id = ?'),
+    hasAccount: db.prepare('SELECT 1 FROM tenant_accounts WHERE tenant_id = ? AND code = ?'),
+    upsertRow: Object.fromEntries(ENTITY_NAMES.map(entity => [entity, db.prepare(upsertSql(entity))])),
+    countRows: Object.fromEntries(ENTITY_NAMES.map(entity => [
+      entity, db.prepare(`SELECT COUNT(*) AS count FROM ${ENTITIES[entity].table} WHERE tenant_id = ?`)
+    ]))
   };
 
   function insertSteps(customerId, steps = []) {
@@ -201,6 +261,63 @@ function createStore(db) {
     }
   }
 
+  /**
+   * Latest committed import run and current row count for each entity in a tenant
+   * @returns {Object<string, { run: object|null, rowCount: number }>}
+   */
+  function getImportState(tenantId) {
+    const runs = stmts.importRunsByTenant.all(tenantId).map(toImportRun);
+    return Object.fromEntries(ENTITY_NAMES.map(entity => [entity, {
+      run: runs.filter(r => r.entity === entity).pop() || null,
+      rowCount: stmts.countRows[entity].get(tenantId).count
+    }]));
+  }
+
+  function importLookups(tenantId) {
+    return {
+      hasClient: (sourceId) => Boolean(stmts.hasClient.get(tenantId, sourceId)),
+      hasAccount: (code) => Boolean(stmts.hasAccount.get(tenantId, code))
+    };
+  }
+
+  /**
+   * Writes a prepared file's valid rows into a tenant in one transaction, records the run, and
+   * completes the Import step once every entity has been imported. Committing the same file as
+   * the entity's latest run is a no-op that returns that run.
+   * @returns {{ outcome: 'committed'|'duplicate', run: object }}
+   */
+  const commitImport = db.transaction(({ customerId, tenantId, entity, filename, contentHash, prepared }) => {
+    const latest = toImportRun(stmts.latestImportRun.get(tenantId, entity));
+    if (latest?.contentHash === contentHash) return { outcome: 'duplicate', run: latest };
+
+    const { lastInsertRowid } = stmts.insertImportRun.run({
+      tenantId,
+      entity,
+      filename,
+      mappingId: prepared.mapping.id,
+      contentHash,
+      rowsRead: prepared.rowsRead,
+      rowsValid: prepared.rowsValid,
+      rowsRejected: prepared.rowsRejected,
+      rowsFlagged: prepared.rowsFlagged,
+      committedAt: new Date().toISOString()
+    });
+    for (const row of prepared.rows) {
+      stmts.upsertRow[entity].run(toRowParams(entity, tenantId, lastInsertRowid, row));
+    }
+
+    const state = getOnboardingState(customerId);
+    const allImported = ENTITY_NAMES.every(e => stmts.latestImportRun.get(tenantId, e));
+    if (state && allImported) {
+      const steps = state.steps.map(step =>
+        step.id === 'step_4' ? { ...step, status: 'completed' } : step
+      );
+      updateOnboardingState(customerId, { steps, progressPercent: calculateProgress(steps) });
+    }
+
+    return { outcome: 'committed', run: toImportRun(stmts.importRunById.get(lastInsertRowid)) };
+  });
+
   function getDataMappings(customerId) {
     return stmts.mappingsByCustomerId.all(customerId).map(toDataMapping);
   }
@@ -229,6 +346,9 @@ function createStore(db) {
     getTenantByCustomerId,
     addTenant,
     provisionTenant,
+    getImportState,
+    importLookups,
+    commitImport: (input) => commitImport.immediate(input),
     getOnboardingState,
     getAllOnboardingStates,
     addOnboardingState,

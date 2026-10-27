@@ -65,6 +65,101 @@ const SCHEMA = `
     updated_at     TEXT NOT NULL,
     PRIMARY KEY (customer_id, entity)
   );
+
+  CREATE TABLE IF NOT EXISTS import_runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    entity       TEXT NOT NULL CHECK (entity IN ('clients', 'accounts', 'contacts', 'transactions')),
+    filename     TEXT NOT NULL,
+    mapping_id   TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    rows_read     INTEGER NOT NULL,
+    rows_valid    INTEGER NOT NULL,
+    rows_rejected INTEGER NOT NULL,
+    rows_flagged  INTEGER NOT NULL,
+    committed_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_import_runs_tenant_entity ON import_runs(tenant_id, entity);
+
+  -- Amounts are integer minor units (cents/pence) with an explicit currency; codes are TEXT so
+  -- leading zeros survive. UNIQUE (tenant_id, source id) makes re-imports update, not duplicate.
+  CREATE TABLE IF NOT EXISTS tenant_clients (
+    tenant_id            TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    source_id            TEXT NOT NULL,
+    name                 TEXT NOT NULL,
+    entity_type          TEXT,
+    status               TEXT,
+    onboarded_date       TEXT,
+    tax_id               TEXT,
+    annual_revenue_minor INTEGER,
+    currency             TEXT NOT NULL CHECK (length(currency) = 3),
+    industry             TEXT,
+    payment_terms        TEXT,
+    primary_contact_name TEXT,
+    needs_review         INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0, 1)),
+    review_notes         TEXT,
+    import_run_id        INTEGER NOT NULL REFERENCES import_runs(id),
+    UNIQUE (tenant_id, source_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS tenant_accounts (
+    tenant_id      TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    code           TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    type           TEXT,
+    sub_type       TEXT,
+    normal_balance TEXT,
+    is_active      INTEGER CHECK (is_active IN (0, 1)),
+    description    TEXT,
+    parent_code    TEXT,
+    needs_review   INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0, 1)),
+    review_notes   TEXT,
+    import_run_id  INTEGER NOT NULL REFERENCES import_runs(id),
+    UNIQUE (tenant_id, code),
+    FOREIGN KEY (tenant_id, parent_code) REFERENCES tenant_accounts(tenant_id, code) DEFERRABLE INITIALLY DEFERRED
+  );
+
+  CREATE TABLE IF NOT EXISTS tenant_contacts (
+    tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    source_id         TEXT NOT NULL,
+    client_source_id  TEXT NOT NULL,
+    first_name        TEXT,
+    last_name         TEXT,
+    email             TEXT,
+    phone             TEXT,
+    role              TEXT,
+    is_active         INTEGER CHECK (is_active IN (0, 1)),
+    preferred_channel TEXT,
+    department        TEXT,
+    needs_review      INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0, 1)),
+    review_notes      TEXT,
+    import_run_id     INTEGER NOT NULL REFERENCES import_runs(id),
+    UNIQUE (tenant_id, source_id),
+    FOREIGN KEY (tenant_id, client_source_id) REFERENCES tenant_clients(tenant_id, source_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS tenant_transactions (
+    tenant_id        TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    source_id        TEXT NOT NULL,
+    client_source_id TEXT NOT NULL,
+    account_code     TEXT NOT NULL,
+    date             TEXT NOT NULL,
+    description      TEXT,
+    entry_type       TEXT,
+    amount_minor     INTEGER NOT NULL,
+    currency         TEXT NOT NULL CHECK (length(currency) = 3),
+    reference        TEXT,
+    payment_method   TEXT,
+    status           TEXT,
+    category         TEXT,
+    needs_review     INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0, 1)),
+    review_notes     TEXT,
+    import_run_id    INTEGER NOT NULL REFERENCES import_runs(id),
+    UNIQUE (tenant_id, source_id),
+    FOREIGN KEY (tenant_id, client_source_id) REFERENCES tenant_clients(tenant_id, source_id),
+    FOREIGN KEY (tenant_id, account_code) REFERENCES tenant_accounts(tenant_id, code)
+  );
 `;
 
 function seed(db) {

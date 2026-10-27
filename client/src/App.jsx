@@ -72,7 +72,7 @@ function App() {
           <TenantSetupTab onProvisioned={loadOnboarding} onNavigate={setActiveTab} />
         )}
         {activeTab === 'import' && (
-          <PlaceholderTab title="Import" description="Import customer data into the platform" />
+          <ImportTab onImported={loadOnboarding} onNavigate={setActiveTab} />
         )}
       </main>
     </div>
@@ -679,14 +679,267 @@ function TenantSetupTab({ onProvisioned, onNavigate }) {
   );
 }
 
-function PlaceholderTab({ title, description }) {
+function ImportTab({ onImported, onNavigate }) {
+  const [customers, setCustomers] = useState([]);
+  const [customerId, setCustomerId] = useState('');
+  const [imports, setImports] = useState(null);
+  const [entity, setEntity] = useState('clients');
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/customers')
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then(list => {
+        setCustomers(list);
+        if (list.length > 0) setCustomerId(list[0].id);
+      })
+      .catch(err => setMessage({ type: 'error', text: `Failed to load customers: ${err.message}` }));
+  }, []);
+
+  const loadImports = (id = customerId) => {
+    if (!id) return Promise.resolve();
+    return fetch(`/api/customers/${id}/imports`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(setImports);
+  };
+
+  useEffect(() => {
+    setFile(null);
+    setPreview(null);
+    setMessage(null);
+    loadImports(customerId);
+  }, [customerId]);
+
+  const upload = async (url, selected) => {
+    const res = await fetch(`${url}?filename=${encodeURIComponent(selected.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/csv' },
+      body: await selected.text()
+    });
+    const body = await res.json().catch(() => ({}));
+    return { res, body };
+  };
+
+  const showError = (body, fallback) => setMessage({
+    type: 'error',
+    text: body.error || fallback,
+    headers: body.unmatchedHeaders,
+    link: body.code === 'not_provisioned' ? 'tenant-setup' : null
+  });
+
+  const handleFile = async (e) => {
+    const selected = e.target.files?.[0];
+    e.target.value = '';
+    if (!selected) return;
+    setFile(selected);
+    setPreview(null);
+    setMessage(null);
+    setBusy(true);
+    try {
+      const { res, body } = await upload(`/api/customers/${customerId}/imports/${entity}/preview`, selected);
+      if (!res.ok) return showError(body, `Preview failed (HTTP ${res.status})`);
+      setPreview(body);
+    } catch (err) {
+      setMessage({ type: 'error', text: "That file couldn't be read" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCommit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { res, body } = await upload(`/api/customers/${customerId}/imports/${entity}`, file);
+      if (!res.ok) return showError(body, 'The import did not complete. Nothing was written, so you can upload the file again.');
+
+      const label = imports.entities.find(x => x.entity === entity).label;
+      const text = body.outcome === 'duplicate'
+        ? `${label}: this file was already imported, nothing changed`
+        : body.outcome === 'nothing_to_import'
+          ? `${label}: no valid rows, nothing was written`
+          : `${label}: imported ${body.rowsValid} rows`;
+      setMessage({ type: 'success', text });
+      setFile(null);
+      setPreview(null);
+      onImported?.();
+    } catch (err) {
+      setMessage({ type: 'error', text: 'The import did not complete. Nothing was written, so you can upload the file again.' });
+    } finally {
+      setBusy(false);
+      loadImports();
+    }
+  };
+
+  const entities = imports?.entities || [];
+  const imported = new Set(entities.filter(x => x.run).map(x => x.entity));
+  const selectedEntity = entities.find(x => x.entity === entity);
+  const blockedBy = selectedEntity?.requires.filter(r => !imported.has(r)) || [];
+  const sampleKeys = preview?.sample[0] ? Object.keys(preview.sample[0]) : [];
+
   return (
-    <div className="placeholder">
-      <h2>{title}</h2>
-      <p>{description}</p>
-      <p style={{ marginTop: '20px', fontSize: '0.9rem' }}>
-        🚧 This section is ready to be built
+    <div>
+      <h2>Import</h2>
+      <p style={{ color: '#6b7280', marginBottom: '20px' }}>
+        Load a customer's clients, chart of accounts, contacts and transactions into their tenant
       </p>
+
+      {message && (
+        <div className={`form-alert ${message.type}`} role={message.type === 'error' ? 'alert' : 'status'}>
+          {message.type === 'success' ? '✓' : '⚠️'} {message.text}
+          {message.headers?.length > 0 && <> — unmatched headers: {message.headers.join(', ')}</>}
+          {message.link && (
+            <>
+              {' '}
+              <button type="button" className="link-button" onClick={() => onNavigate?.(message.link)}>
+                Go to Tenant Setup
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="customer-form">
+        <div className="form-field">
+          <label htmlFor="import-customer">Customer</label>
+          <select id="import-customer" value={customerId} onChange={e => setCustomerId(e.target.value)} disabled={busy}>
+            {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {imports && !imports.provisioned && (
+        <div className="form-alert error" role="alert" style={{ marginTop: '16px' }}>
+          ⚠️ Provision a tenant before importing{' '}
+          <button type="button" className="link-button" onClick={() => onNavigate?.('tenant-setup')}>
+            Go to Tenant Setup
+          </button>
+        </div>
+      )}
+
+      {imports?.provisioned && (
+        <>
+          <h3 className="section-title">Entity types</h3>
+          <table className="mapping-table tenant-table">
+            <thead>
+              <tr><th></th><th>Entity</th><th>State</th><th>Rows in tenant</th></tr>
+            </thead>
+            <tbody>
+              {entities.map(x => (
+                <tr key={x.entity}>
+                  <td>
+                    <input
+                      type="radio"
+                      name="import-entity"
+                      id={`entity-${x.entity}`}
+                      checked={entity === x.entity}
+                      onChange={() => { setEntity(x.entity); setFile(null); setPreview(null); setMessage(null); }}
+                      disabled={busy}
+                    />
+                  </td>
+                  <td><label htmlFor={`entity-${x.entity}`}>{x.label}</label></td>
+                  <td>
+                    {x.run
+                      ? `Imported ${new Date(x.run.committedAt).toLocaleString()} from ${x.run.filename}`
+                      : 'Not imported'}
+                  </td>
+                  <td>{x.rowCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {blockedBy.length > 0 ? (
+            <p className="field-hint">
+              Import {blockedBy.map(r => entities.find(x => x.entity === r).label.toLowerCase()).join(' and ')} first.
+            </p>
+          ) : (
+            <div className="form-field" style={{ maxWidth: '480px' }}>
+              <label htmlFor="import-file">{selectedEntity?.label} CSV file</label>
+              <input id="import-file" type="file" accept=".csv,text/csv" onChange={handleFile} disabled={busy} />
+              {file && <span className="field-hint">{file.name}</span>}
+            </div>
+          )}
+        </>
+      )}
+
+      {preview && (
+        <>
+          <h3 className="section-title">Preview</h3>
+          <p className="field-hint">Mapping applied: <strong>{preview.mapping.label}</strong></p>
+          <ul className="import-counts">
+            <li><strong>{preview.rowsRead}</strong> read</li>
+            <li><strong>{preview.rowsValid}</strong> valid</li>
+            <li><strong>{preview.rowsRejected}</strong> rejected</li>
+            <li><strong>{preview.rowsFlagged}</strong> flagged for review</li>
+          </ul>
+
+          {preview.rejected.length > 0 && (
+            <>
+              <h4 className="section-title">Rejected rows</h4>
+              <table className="mapping-table preview">
+                <thead><tr><th>Line</th><th>Reason</th><th>Raw line</th></tr></thead>
+                <tbody>
+                  {preview.rejected.map(r => (
+                    <tr key={r.line}><td>{r.line}</td><td>{r.reason}</td><td><code>{r.raw}</code></td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {preview.flagged.length > 0 && (
+            <>
+              <h4 className="section-title">Flagged for review</h4>
+              <table className="mapping-table preview">
+                <thead><tr><th>Line</th><th>Record</th><th>Unmapped values</th></tr></thead>
+                <tbody>
+                  {preview.flagged.map(f => (
+                    <tr key={f.line}>
+                      <td>{f.line}</td>
+                      <td>{f.sourceId}</td>
+                      <td>{f.review.map(r => `${r.field}: "${r.raw}"`).join(', ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {preview.sample.length > 0 && (
+            <>
+              <h4 className="section-title">Sample of normalized rows</h4>
+              <div className="preview-wrapper">
+                <table className="mapping-table preview">
+                  <thead><tr>{sampleKeys.map(k => <th key={k}>{k}</th>)}</tr></thead>
+                  <tbody>
+                    {preview.sample.map((row, i) => (
+                      <tr key={i}>{sampleKeys.map(k => <td key={k}>{row[k] === null ? '' : String(row[k])}</td>)}</tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleCommit}
+            disabled={busy || preview.rowsValid === 0}
+            style={{ marginTop: '16px' }}
+          >
+            {busy ? 'Importing...' : `Import ${preview.rowsValid} rows`}
+          </button>
+        </>
+      )}
     </div>
   );
 }

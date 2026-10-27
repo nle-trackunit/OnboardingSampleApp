@@ -3,7 +3,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const { prepareImport } = require('../import/pipeline');
 const { openDatabase } = require('./db');
 const { createStore } = require('./store');
 const { createCustomer, createDefaultOnboardingSteps } = require('../models');
@@ -229,5 +231,123 @@ describe('Tenant persistence', () => {
 
     store.addOnboardingState({ customerId: 'cust_001', steps: createDefaultOnboardingSteps() });
     assert.strictEqual(store.provisionTenant('cust_001', 'professional').tenant.id, 't_old');
+  });
+});
+
+describe('Data import', () => {
+  const SAMPLE_DIR = path.join(__dirname, '..', '..', '..', 'sample-data', 'CustomerC_PremierBookkeeping');
+  const FILES = { clients: 'clients', accounts: 'chart_of_accounts', contacts: 'contacts', transactions: 'transactions' };
+  const sample = (entity) => fs.readFileSync(path.join(SAMPLE_DIR, `${FILES[entity]}.csv`), 'utf8');
+
+  let db;
+  let store;
+  let tenantId;
+
+  function importFile(entity, text = sample(entity)) {
+    const prepared = prepareImport({ entity, text, lookups: store.importLookups(tenantId) });
+    const contentHash = crypto.createHash('sha256').update(text).digest('hex');
+    return {
+      prepared,
+      result: store.commitImport({ customerId: 'cust_001', tenantId, entity, filename: `${entity}.csv`, contentHash, prepared })
+    };
+  }
+
+  const count = (table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    store = createStore(db);
+    tenantId = store.provisionTenant('cust_001', 'starter').tenant.id;
+  });
+
+  it('should write every row and record the run with its counts and mapping', () => {
+    const { result } = importFile('clients');
+
+    assert.strictEqual(result.outcome, 'committed');
+    assert.strictEqual(result.run.mappingId, 'premier-bookkeeping');
+    assert.strictEqual(result.run.rowsValid, 12);
+    assert.strictEqual(store.getImportState(tenantId).clients.rowCount, 12);
+    assert.strictEqual(store.getImportState(tenantId).contacts.run, null);
+  });
+
+  it('should treat the same file again as a no-op and keep one run', () => {
+    const first = importFile('clients').result;
+    const second = importFile('clients').result;
+
+    assert.strictEqual(second.outcome, 'duplicate');
+    assert.deepStrictEqual(second.run, first.run);
+    assert.strictEqual(count('import_runs'), 1);
+    assert.strictEqual(count('tenant_clients'), 12);
+  });
+
+  it('should update rows by source ID on re-import and leave absent rows alone', () => {
+    importFile('clients');
+    const [header, firstRow] = sample('clients').split('\n');
+    importFile('clients', `${header}\n${firstRow.replace('Artisan Bakery & Cafe', 'Artisan Bakery Ltd')}\n`);
+
+    assert.strictEqual(count('tenant_clients'), 12);
+    assert.strictEqual(count('import_runs'), 2);
+    const name = db.prepare("SELECT name FROM tenant_clients WHERE source_id = 'PB-0001'").get().name;
+    assert.strictEqual(name, 'Artisan Bakery Ltd');
+  });
+
+  it('should leave zero rows and no run when the commit fails part way', () => {
+    importFile('clients');
+    db.exec(`
+      CREATE TEMP TRIGGER fail_contact BEFORE INSERT ON tenant_contacts
+      WHEN NEW.source_id = 'CTR-010'
+      BEGIN SELECT RAISE(ABORT, 'forced failure'); END;
+    `);
+
+    assert.throws(() => importFile('contacts'), /forced failure/);
+    assert.strictEqual(count('tenant_contacts'), 0);
+    assert.strictEqual(store.getImportState(tenantId).contacts.run, null);
+
+    db.exec('DROP TRIGGER fail_contact');
+    assert.strictEqual(importFile('contacts').result.run.rowsValid, 20);
+  });
+
+  it('should keep leading-zero codes and enforce tenant parents in the schema', () => {
+    importFile('clients');
+    importFile('accounts');
+    importFile('transactions');
+
+    assert.strictEqual(db.prepare("SELECT parent_code FROM tenant_accounts WHERE code = '0011'").get().parent_code, '0010');
+    assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM tenant_transactions WHERE account_code = '0010'").get().n, 3);
+    assert.throws(() => db.prepare(`
+      INSERT INTO tenant_contacts (tenant_id, source_id, client_source_id, import_run_id) VALUES (?, 'X', 'PB-9999', 1)
+    `).run(tenantId), /FOREIGN KEY/);
+  });
+
+  it('should complete step 4 only once all four entity types are imported', () => {
+    for (const entity of ['clients', 'accounts', 'contacts']) importFile(entity);
+    assert.strictEqual(store.getOnboardingState('cust_001').steps[3].status, 'pending');
+
+    importFile('transactions');
+    const state = store.getOnboardingState('cust_001');
+    assert.strictEqual(state.steps[3].status, 'completed');
+    assert.strictEqual(state.progressPercent, 50);
+
+    const steps = state.steps.map(s => ({ ...s, status: 'completed' }));
+    store.updateOnboardingState('cust_001', { steps, progressPercent: 100 });
+    assert.strictEqual(store.getOnboardingState('cust_001').progressPercent, 100);
+  });
+
+  it('should keep imported data across a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboarding-import-'));
+    try {
+      const dbPath = path.join(dir, 'onboarding.db');
+      db = openDatabase(dbPath);
+      store = createStore(db);
+      tenantId = store.provisionTenant('cust_001', 'starter').tenant.id;
+      importFile('clients');
+      db.close();
+
+      const reopened = createStore(openDatabase(dbPath));
+      assert.strictEqual(reopened.getImportState(tenantId).clients.rowCount, 12);
+      assert.strictEqual(reopened.getImportState(tenantId).clients.run.rowsValid, 12);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
