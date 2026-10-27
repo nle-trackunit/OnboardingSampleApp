@@ -5,6 +5,10 @@ const {
   createTenant, 
   createDefaultOnboardingSteps, 
   validateCustomerInfo,
+  TARGET_FIELDS,
+  validateDataMapping,
+  validateProvisionRequest,
+  resolveCanonicalFields,
   calculateProgress 
 } = require('./index');
 
@@ -68,6 +72,96 @@ describe('Domain Models', () => {
 
       assert.strictEqual(result.valid, false);
       assert.strictEqual(result.errors.contactEmail, 'Contact email is invalid');
+    });
+  });
+
+  describe('validateDataMapping', () => {
+    const sourceHeaders = ['clientCode', 'companyName', 'clientStatus'];
+
+    it('should accept a mapping of every required field and trim values', () => {
+      const result = validateDataMapping('clients', {
+        sourceHeaders,
+        columns: { clientId: ' clientCode ', name: 'companyName', status: 'clientStatus', taxId: '' }
+      });
+
+      assert.strictEqual(result.valid, true);
+      assert.deepStrictEqual(result.mapping.columns, {
+        clientId: 'clientCode',
+        name: 'companyName',
+        status: 'clientStatus'
+      });
+    });
+
+    it('should require the required target fields to be mapped', () => {
+      const result = validateDataMapping('clients', { sourceHeaders, columns: {} });
+
+      assert.strictEqual(result.valid, false);
+      assert.deepStrictEqual(Object.keys(result.errors).sort(), ['clientId', 'name']);
+    });
+
+    it('should reject columns that are not in the file or mapped twice', () => {
+      const result = validateDataMapping('clients', {
+        sourceHeaders,
+        columns: { clientId: 'clientCode', name: 'clientCode', status: 'missing' }
+      });
+
+      assert.strictEqual(result.valid, false);
+      assert.match(result.errors.name, /already mapped to Client ID/);
+      assert.match(result.errors.status, /not in the file/);
+    });
+
+    it('should reject an unknown entity or missing headers', () => {
+      assert.ok(validateDataMapping('widgets', {}).errors.entity);
+      assert.ok(validateDataMapping('clients', { columns: {} }).errors.sourceHeaders);
+    });
+
+    it('should list an alias for every sample-data client column', () => {
+      const aliases = TARGET_FIELDS.clients.flatMap(f => f.aliases);
+      for (const header of ['Client ID', 'clientCode', 'customer_id', 'Primary Contact', 'key_contact_name']) {
+        assert.ok(aliases.includes(header), header);
+      }
+    });
+  });
+
+  describe('createTenant', () => {
+    it('should default to a pending starter tenant that is not yet provisioned', () => {
+      const tenant = createTenant({ customerId: 'cust_1' });
+
+      assert.ok(tenant.id.startsWith('tenant_'));
+      assert.strictEqual(tenant.customerId, 'cust_1');
+      assert.strictEqual(tenant.status, 'pending');
+      assert.strictEqual(tenant.plan, 'starter');
+      assert.strictEqual(tenant.region, null);
+      assert.strictEqual(tenant.provisionedAt, null);
+      assert.ok(tenant.createdAt);
+    });
+  });
+
+  describe('validateProvisionRequest', () => {
+    it('should accept and normalize a known plan', () => {
+      const result = validateProvisionRequest({ plan: ' Enterprise ' });
+      assert.strictEqual(result.valid, true);
+      assert.strictEqual(result.plan, 'enterprise');
+    });
+
+    it('should reject a missing or unknown plan with a per-field message', () => {
+      assert.strictEqual(validateProvisionRequest({}).errors.plan, 'Plan is required');
+      assert.match(validateProvisionRequest({ plan: 'gold' }).errors.plan, /starter, professional, enterprise/);
+    });
+  });
+
+  describe('resolveCanonicalFields', () => {
+    it('should resolve canonical values case-insensitively', () => {
+      assert.deepStrictEqual(
+        resolveCanonicalFields({ region: ' north america ', industry: 'MANUFACTURING' }),
+        { region: 'North America', industry: 'Manufacturing', unmappedField: null }
+      );
+    });
+
+    it('should name the first unmapped field, region before industry', () => {
+      assert.strictEqual(resolveCanonicalFields({ region: 'Mars', industry: 'Energy' }).unmappedField, 'region');
+      assert.strictEqual(resolveCanonicalFields({ region: 'EMEA', industry: 'Energy' }).unmappedField, 'industry');
+      assert.strictEqual(resolveCanonicalFields({ region: '', industry: 'Legal' }).unmappedField, 'region');
     });
   });
 

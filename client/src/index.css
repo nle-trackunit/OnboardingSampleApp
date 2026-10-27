@@ -188,7 +188,9 @@ header p {
   font-size: 0.9rem;
 }
 
-.form-field input {
+.form-field input,
+.form-field select,
+.mapping-table select {
   padding: 10px 12px;
   border: 1px solid #d1d5db;
   border-radius: 6px;
@@ -201,6 +203,12 @@ header p {
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
 }
 
+.form-field select,
+.mapping-table select {
+  background: white;
+}
+
+.mapping-table select[aria-invalid='true'],
 .form-field input[aria-invalid='true'] {
   border-color: #dc2626;
 }
@@ -240,4 +248,102 @@ header p {
 .form-alert.error {
   background: #fef2f2;
   color: #991b1b;
+}
+
+.field-hint {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.section-title {
+  margin: 24px 0 12px;
+}
+
+.mapping-table {
+  border-collapse: collapse;
+  margin-bottom: 20px;
+}
+
+.mapping-table th,
+.mapping-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mapping-table td .field-error {
+  display: block;
+  margin-top: 4px;
+}
+
+.mapping-table .required {
+  color: #dc2626;
+}
+
+.preview-wrapper {
+  overflow-x: auto;
+}
+
+.mapping-table.preview {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.tenant-table {
+  width: 100%;
+}
+
+.secondary-button {
+  padding: 6px 14px;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  background: white;
+  color: #2563eb;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.provision-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 480px;
+  padding: 16px;
+  margin-bottom: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.provision-panel select {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+.import-counts {
+  display: flex;
+  gap: 24px;
+  list-style: none;
+  margin: 12px 0;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
 }
