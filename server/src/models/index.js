@@ -109,6 +109,78 @@ function validateCustomerInfo(data = {}) {
 }
 
 /**
+ * @typedef {Object} TargetField
+ * @property {string} key - Platform field name
+ * @property {string} label - Human-readable field name
+ * @property {boolean} required - Whether every mapping must provide this field
+ * @property {string[]} aliases - Known customer column names for this field
+ */
+
+/**
+ * @typedef {Object} DataMapping
+ * @property {string} customerId - Associated customer ID
+ * @property {string} entity - Mapped entity, e.g. 'clients'
+ * @property {string[]} sourceHeaders - Column headers of the customer's file
+ * @property {Object<string, string>} columns - Target field key -> source header
+ * @property {string} updatedAt - ISO timestamp
+ */
+
+/** @type {Object<string, TargetField[]>} */
+const TARGET_FIELDS = {
+  clients: [
+    { key: 'clientId', label: 'Client ID', required: true, aliases: ['Client ID', 'clientCode', 'customer_id'] },
+    { key: 'name', label: 'Name', required: true, aliases: ['Client Name', 'companyName', 'business_name'] },
+    { key: 'entityType', label: 'Entity Type', required: false, aliases: ['Business Type', 'entityType', 'legal_structure'] },
+    { key: 'status', label: 'Status', required: false, aliases: ['Status', 'clientStatus', 'account_status'] },
+    { key: 'startDate', label: 'Start Date', required: false, aliases: ['Date Onboarded', 'startDate', 'registration_date'] },
+    { key: 'taxId', label: 'Tax ID', required: false, aliases: ['Tax ID', 'federalTaxId', 'tax_reference'] },
+    { key: 'revenue', label: 'Revenue', required: false, aliases: ['Annual Revenue', 'yearlyRevenue', 'gross_revenue'] },
+    { key: 'industry', label: 'Industry', required: false, aliases: ['Industry', 'sectorCode', 'industry_sector'] },
+    { key: 'paymentTerms', label: 'Payment Terms', required: false, aliases: ['Payment Terms', 'billingTerms', 'credit_terms'] },
+    { key: 'primaryContact', label: 'Primary Contact', required: false, aliases: ['Primary Contact', 'mainContact', 'key_contact_name'] }
+  ]
+};
+
+/**
+ * Validates a column mapping against the target fields of an entity
+ * @param {string} entity
+ * @param {{ sourceHeaders?: string[], columns?: Object<string, string> }} data
+ * @returns {{ valid: boolean, errors: Object<string, string>, mapping: { sourceHeaders: string[], columns: Object<string, string> } }}
+ */
+function validateDataMapping(entity, data = {}) {
+  const fields = TARGET_FIELDS[entity];
+  if (!fields) {
+    return { valid: false, errors: { entity: `Unknown entity: ${entity}` }, mapping: null };
+  }
+
+  const sourceHeaders = Array.isArray(data.sourceHeaders)
+    ? data.sourceHeaders.map(h => String(h).trim()).filter(Boolean)
+    : [];
+  const errors = {};
+  if (sourceHeaders.length === 0) errors.sourceHeaders = 'Source headers are required';
+
+  const columns = {};
+  const usedBy = {};
+  for (const field of fields) {
+    const source = String(data.columns?.[field.key] ?? '').trim();
+    if (!source) {
+      if (field.required) errors[field.key] = `${field.label} must be mapped`;
+      continue;
+    }
+    if (sourceHeaders.length > 0 && !sourceHeaders.includes(source)) {
+      errors[field.key] = `Column "${source}" is not in the file`;
+    } else if (usedBy[source]) {
+      errors[field.key] = `Column "${source}" is already mapped to ${usedBy[source]}`;
+    } else {
+      usedBy[source] = field.label;
+    }
+    columns[field.key] = source;
+  }
+
+  return { valid: Object.keys(errors).length === 0, errors, mapping: { sourceHeaders, columns } };
+}
+
+/**
  * Calculates progress percentage from steps
  * @param {OnboardingStep[]} steps 
  * @returns {number}
@@ -124,5 +196,7 @@ module.exports = {
   createTenant,
   createDefaultOnboardingSteps,
   validateCustomerInfo,
+  TARGET_FIELDS,
+  validateDataMapping,
   calculateProgress
 };
