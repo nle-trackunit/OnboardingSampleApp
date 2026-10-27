@@ -32,6 +32,10 @@ server:
 client:
     npm run client
 
+# Delete the local SQLite database; it is recreated with seed data on next server start
+reset-db:
+    node -e "require('fs').rmSync('server/data', { recursive: true, force: true })"
+
 # Run unit and e2e tests
 test:
     npm test

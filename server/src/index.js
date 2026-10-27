@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const store = require('./data/store');
+const { openDatabase } = require('./data/db');
+const { createStore } = require('./data/store');
 const {
   createCustomer,
   createDefaultOnboardingSteps,
@@ -10,6 +11,7 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const store = createStore(openDatabase());
 
 // Middleware
 app.use(cors());
@@ -32,14 +34,17 @@ app.post('/api/customers', (req, res) => {
     return res.status(400).json({ error: 'Validation failed', errors });
   }
 
-  const customer = store.addCustomer(createCustomer(info));
   const steps = createDefaultOnboardingSteps().map(step =>
     step.id === 'step_1' ? { ...step, status: 'completed' } : step
   );
-  store.addOnboardingState({
-    customerId: customer.id,
-    steps,
-    progressPercent: calculateProgress(steps)
+  const customer = store.transaction(() => {
+    const created = store.addCustomer(createCustomer(info));
+    store.addOnboardingState({
+      customerId: created.id,
+      steps,
+      progressPercent: calculateProgress(steps)
+    });
+    return created;
   });
 
   res.status(201).json(customer);
